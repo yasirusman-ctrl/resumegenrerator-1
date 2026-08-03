@@ -1,176 +1,202 @@
-# GitHub Resume Generator API Documentation
+# Resume Generator API Documentation
 
-## Overview
+Full-featured resume platform backend. Auth, documents/versions, templates marketplace, teams, automation (schedules + webhooks + email), AI assistant, imports, analytics/A-B tests, i18n, and a public API with SDK + CLI.
 
-This project generates professional PDF resumes from GitHub profiles using LaTeX templates. The API consists of two main components:
-
-1. **Backend API** - Node.js/TypeScript service that:
-   - Fetches GitHub user data via GitHub REST API
-   - Renders LaTeX templates to HTML/PDF using an external service
-   - Returns PDF resumes as downloadable files
-
-2. **Frontend UI** - React application that:
-   - Allows users to input GitHub username or URL
-   - Selects between modern and classic resume templates
-   - Fetches and downloads PDF resumes
-
-## API Endpoints
-
-### POST /api/generate
-
-**Description:** Generate a resume PDF from a GitHub username
-
-**Request Body:**
-```json
-{
-  "username": "github_username",
-  "template": "modern|classic"
-}
-```
-
-**Response on Success:**
-- **Status:** 200 OK
-- **Content-Type:** application/pdf
-- **Content-Disposition:** attachment; filename="{username}_resume.pdf"
-
-**Error Responses:**
-- **400 Bad Request:** Invalid username format, username too long, invalid template type
-- **429 Too Many Requests:** Rate limit exceeded (API requests limited to 10 per minute per IP)
-- **500 Internal Server Error:** LaTeX compilation failed or internal server error
+Base URL: `http://localhost:3000`. All routes under `/api/v1` are also mounted at `/api`.
 
 ## Authentication
 
-The backend uses a GitHub Personal Access Token for GitHub API authentication. This token should be set as `GITHUB_TOKEN` environment variable.
+Register/login returns a JWT. Send it as `Authorization: Bearer <token>`.
 
-**Example .env file:**
-```env
-GITHUB_TOKEN=your_github_token_here
-PORT=3000
+```
+POST /api/v1/auth/register   { email, password, username }
+POST /api/v1/auth/login      { email, password }        -> { token, user }
+GET  /api/v1/auth/me                                   -> { user, settings }
+PATCH /api/v1/auth/me                                   { name?, bio?, avatar? }
+GET  /api/v1/auth/settings                              -> { settings }
+PATCH /api/v1/auth/settings                             { default_template?, default_accent?, default_font?, locale?, theme? }
 ```
 
-## Templates
+API keys: create via UI or `POST /api/v1/api-keys`, then use `Authorization: Bearer <apiKey>`.
 
-### Modern Template
-- **Style:** Professional and clean (Awesome-CV inspired)
-- **Features:** Includes name, title, contact info, summary, languages, and top 4 projects
-- **LaTeX Package:** `moderncv` with `casual` style
+## Documents (resumes)
 
-### Classic Template
-- **Style:** Academic/resume style
-- **Features:** Centered header with comprehensive project details
-- **LaTeX Package:** `article` class with custom styling
-
-## Error Handling
-
-The API returns structured error messages:
-```json
-{
-  "error": "Error description"
-}
+```ts
+// ResumeData shape
+{ contact: Record<string,string>, summary: string, skills: string[],
+  sections: Array<{ id: string, type: string, title: string, items: string[] }> }
 ```
 
-**Common Errors:**
-- "GitHub username is required"
-- "Invalid GitHub username format"
-- "GitHub username is too long"
-- "Invalid template type"
-- "Failed to compile LaTeX to PDF"
-- "Failed to fetch GitHub data. Please check the username."
+```
+POST   /api/v1/docs                    { title, data, template_id?, template_key?, locale?, accent?, font?, visibility?, team_id? }
+GET    /api/v1/docs                     -> { docs }
+GET    /api/v1/docs/:id                 -> { doc, template?, access }
+PATCH  /api/v1/docs/:id                 partial of above
+DELETE /api/v1/docs/:id
+GET    /api/v1/docs/:id/versions        -> { versions }
+GET    /api/v1/docs/:id/versions/:v
+POST   /api/v1/docs/:id/versions/:v/restore
+POST   /api/v1/docs/:id/share?visibility=public|private   -> { share_id, url: "/share/:id" }
+GET    /api/v1/docs/:id/export?format=pdf|html|docx|txt    (binary/stream)
+GET    /api/v1/docs/:id/validate        -> { score, pass, issues[] }
+GET    /api/v1/docs/:id/analytics       -> { stats: { views, downloads } }
+GET    /api/v1/docs/:id/comments        -> { comments }
+POST   /api/v1/docs/:id/comments        { body }
+POST   /api/v1/docs/:id/comments/:cid/resolve
+DELETE /api/v1/docs/:id/comments/:cid
+```
 
-## Rate Limiting
+Legacy `GET /api/v1/resumes?username=` and `GET /api/v1/resumes/:shareId/(html|pdf)` are preserved.
 
-- **Global:** 10 requests per minute per IP address
-- **GitHub API:** Automatic retry on rate limit errors (up to 3 attempts with exponential backoff)
-- **LaTeX Service:** 30-second timeout per request
+## Public shares
 
-## Security
+```
+GET /api/v1/share/:shareId             -> rendered HTML page (no auth)
+GET /api/v1/share/:shareId/export?format=html|pdf|docx|txt
+GET /api/v1/share/ab/:shareId          -> A/B variant redirect (server picks variant by viewer)
+```
 
-The API implements several security measures:
+## Editor + templates
 
-1. **Input Validation & Sanitization:** All inputs are validated and sanitized
-2. **Rate Limiting:** Prevents abuse with per-IP rate limiting
-3. **Security Headers:** Includes CSP, X-Frame-Options, X-XSS-Protection, etc.
-4. **Error Messages:** Generic error messages to avoid information leakage
+```
+POST /api/v1/editor/preview   { data, template_id?, template_key?, accent?, font?, locale?, variables? } -> { html, tex }
+GET  /api/v1/editor/templates           -> built-in template keys
+GET  /api/v1/editor/templates/:id
+```
 
-## Local Development
+## AI assistant (local offline fallback; remote LLM when AI_API_URL+AI_API_KEY set)
 
-### Backend
+```
+POST /api/v1/ai/suggest-bullets  { role, existing?, provider? } -> { bullets[], provider }
+POST /api/v1/ai/rewrite          { text, tone: formal|concise|action|friendly, provider? } -> { bullet, provider }
+POST /api/v1/ai/summary          { role, skills?, provider? } -> { summary, provider }
+POST /api/v1/ai/skills           { role, provider? } -> { skills[], provider }
+```
+
+## Import (GitHub / LinkedIn)
+
+```
+GET  /api/v1/import/fields            -> field list
+POST /api/v1/import/github            { username }      -> { source }
+POST /api/v1/import/linkedin          { text }          -> { source }
+POST /api/v1/import/map               { source, mapping: {sourceField: targetField} } -> { source }
+POST /api/v1/import/to-resume         { source, title? } -> { data, doc? }
+```
+
+## Marketplace
+
+```
+GET    /api/v1/marketplace?query=&author=&status=&limit=   -> { templates[] }
+GET    /api/v1/marketplace/:slug      -> { template } (includes content_html/content_tex)
+GET    /api/v1/marketplace/favorites  (auth)
+GET    /api/v1/marketplace/mine       (auth)
+POST   /api/v1/marketplace            { name, description?, content_html, content_tex?, variables?, language?, tags? }
+PATCH  /api/v1/marketplace/:slug
+DELETE /api/v1/marketplace/:slug
+POST   /api/v1/marketplace/:slug/rate       { rating: 1-5, comment? }  -> { template }
+POST   /api/v1/marketplace/:slug/favorite   (auth)
+DELETE /api/v1/marketplace/:slug/favorite   (auth)
+GET    /api/v1/marketplace/:slug/me         (auth) -> { favorited, rating }
+```
+
+## Teams
+
+```
+GET    /api/v1/teams              -> { teams }
+POST   /api/v1/teams              { name }
+GET    /api/v1/teams/:id          -> { team, members, role }
+DELETE /api/v1/teams/:id          (owner only)
+POST   /api/v1/teams/:id/members  { username | email, role: viewer|editor|owner }
+PATCH  /api/v1/teams/:id/members/:uid  { role }
+DELETE /api/v1/teams/:id/members/:uid
+GET    /api/v1/teams/:id/docs
+POST   /api/v1/teams/:id/docs     { title, data? }
+```
+
+## Automation
+
+```
+GET  /api/v1/automation/schedules            -> { schedules }
+POST /api/v1/automation/schedules            { doc_id?, cron, timezone?, email_to?, webhook_url? }
+PATCH /api/v1/automation/schedules/:id
+DELETE /api/v1/automation/schedules/:id
+POST /api/v1/automation/schedules/:id/run
+GET  /api/v1/automation/schedules/next?cron=0 9 * * *     -> { next } (no auth)
+GET  /api/v1/automation/webhooks             -> { webhooks }
+POST /api/v1/automation/webhooks             { name, url, secret?, events[] }
+DELETE /api/v1/automation/webhooks/:id
+POST /api/v1/automation/webhooks/test        { url, secret?, event? } -> { ok, status }
+```
+
+Scheduled runs render the doc and either email the PDF (SMTP via `SMTP_*` env) or POST a signed webhook (`X-Resume-Signature: sha256=hmac(secret, payload)`).
+
+## Validation
+
+```
+POST /api/v1/validate   { data? | name?, email?, ... } -> { score, pass, issues[] }
+```
+
+## Analytics & A/B testing
+
+```
+GET  /api/v1/analytics/ab-tests        -> { tests }
+POST /api/v1/analytics/ab-tests        { name, doc_ids: number[] (>=2) } -> { test, url }
+GET  /api/v1/analytics/ab-tests/:id    -> { test, variants[] }
+GET  /api/v1/analytics/doc/:id         -> { stats }
+```
+
+## i18n
+
+```
+GET /api/v1/i18n/langs     -> { langs }
+GET /api/v1/i18n/:lang     -> { translations }
+PUT /api/v1/i18n/          { lang, translations } (auth)
+```
+
+## WebSocket (collaborative editing)
+
+`ws://localhost:3000/ws?token=<jwt>` — subscribe to doc rooms, broadcast edits, cursor presence, and compile progress. See `backend/src/websocket/index.ts`.
+
+## SDK + CLI
+
+See `sdk/` package:
+
+```ts
+import { ResumeSDK } from 'resume-sdk'
+const sdk = new ResumeSDK({ baseUrl: 'http://localhost:3000' })
+await sdk.auth.login('user@example.com', 'secret')
+await sdk.docs.create({ title: 'My Resume', data: sdk.emptyData() })
+```
+
+CLI:
+
 ```bash
-cd backend
-cp .env.example .env
-# Edit .env with your GitHub token
-npm run dev
+resume login --email user@example.com --password secret
+resume docs list
+resume docs create --title "My Resume"
+resume docs export 1 --format pdf --out resume.pdf
+resume validate 1
+resume schedule create --cron "0 9 * * 1" --email me@example.com
+resume ab create --name "Test" --docs 1,2
+resume template upload --file template.html --name "Custom"
 ```
 
-### Frontend
+## Environment
+
+| Var | Purpose |
+|---|---|
+| `PORT` | HTTP port (default 3000) |
+| `JWT_SECRET` | HMAC secret for tokens (default dev secret) |
+| `DB_PATH` | SQLite path (default `data/resumes.db`) |
+| `GITHUB_TOKEN` | GitHub API token for importer |
+| `SMTP_HOST/PORT/USER/PASS/FROM` | Email delivery for scheduled resumes |
+| `AI_API_URL`, `AI_API_KEY` | Optional remote LLM; falls back to local heuristics |
+| `APP_URL` | Public base URL used in emails/webhooks |
+| `DISABLE_SCHEDULER` | Set `true` to skip the cron loop |
+
+## Tests
+
 ```bash
-cd frontend
-npm run dev
+cd backend && npm test && npm run typecheck
+cd frontend && npm test && npm run build
 ```
-
-The frontend will automatically proxy requests to `http://localhost:3000/api/generate`
-
-## Building
-
-### Backend
-```bash
-cd backend
-npm run build
-```
-
-This produces a compiled `dist/` folder with the TypeScript code.
-
-### Frontend
-```bash
-cd frontend
-npm run build
-```
-
-This produces a compiled `dist/` folder with the optimized React application.
-
-## Testing
-
-The application currently does not include automated tests, but you can manually test the API by:
-
-1. Running the backend and frontend as described above
-2. Opening the frontend UI and submitting a valid GitHub username
-3. Verifying the PDF download in your browser
-
-## Dependencies
-
-### Backend
-- `@hono/node-server`: Web server framework
-- `@hono/cors`: CORS middleware
-- `@octokit/rest`: GitHub API client
-- `cors`: CORS middleware
-- `dotenv`: Environment variable loading
-
-### Frontend
-- `react`: UI library
-- `react-dom`: React DOM renderer
-- `lucide-react`: Icon library
-
-## Deployment
-
-For production deployment, ensure:
-
-1. The `GITHUB_TOKEN` environment variable is set
-2. The backend is listening on port 3000
-3. CORS is properly configured if the API is accessed from a different origin
-
-## Troubleshooting
-
-### LaTeX Compilation Fails
-If the LaTeX compilation fails, the API returns the original TeX content in the response for debugging:
-```json
-{
-  "error": "Failed to compile LaTeX to PDF",
-  "tex": "[LaTeX code here]"
-}
-```
-
-### GitHub API Errors
-GitHub rate limiting is handled automatically with retries. If persistent rate limiting issues occur, consider rotating your GitHub token or using a personal token with higher limits.
-
-### Frontend Cannot Connect to Backend
-Ensure the backend is running and accessible. The frontend uses environment variables from `VITE_API_URL` if available.

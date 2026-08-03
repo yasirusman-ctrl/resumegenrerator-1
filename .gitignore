@@ -12,6 +12,8 @@ logs/
 *.pid
 *.lock
 database/
+data/
+backend/data/
 
 # PDF outputs
 *.pdf
